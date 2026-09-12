@@ -4,6 +4,7 @@ name: Build UEFI Application (EDK2)
 on:
   push:
     branches: [ main, master ]
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -18,6 +19,7 @@ jobs:
         run: |
           set -e
           cd "$GITHUB_WORKSPACE"
+
           if [ -f SmbiosSpooferV2.dsc ]; then
             SRC="$GITHUB_WORKSPACE"
           elif [ -f SmbiosChanger-main/SmbiosSpooferV2.dsc ]; then
@@ -29,6 +31,7 @@ jobs:
             find . -maxdepth 3 -name "*.dsc" || true
             exit 1
           fi
+
           rm -rf "$GITHUB_WORKSPACE/pkg"
           mkdir -p "$GITHUB_WORKSPACE/pkg/SmbiosChanger-main"
           cp -r "$SRC"/. "$GITHUB_WORKSPACE/pkg/SmbiosChanger-main/"
@@ -46,14 +49,31 @@ jobs:
       - name: Build BaseTools
         run: make -C "$GITHUB_WORKSPACE/edk2/BaseTools"
 
-      - name: Build SmbiosSpooferV2.efi
+      - name: Build SmbiosSpooferV2.efi (auto-detect toolchain)
         run: |
           cd "$GITHUB_WORKSPACE/edk2"
           export WORKSPACE="$PWD"
           export EDK_TOOLS_PATH="$PWD/BaseTools"
           export PACKAGES_PATH="$PWD:$GITHUB_WORKSPACE/pkg"
           . edksetup.sh BaseTools
-          build -a X64 -b RELEASE -t GCC5 -p SmbiosChanger-main/SmbiosSpooferV2.dsc
+
+          echo "=== 本版本 edk2 中定义的工具链标签 ==="
+          grep -oE '^\*_[A-Z0-9]+_' Conf/tools_def.txt | sed 's/^\*_//; s/_$//' | sort -u | tr '\n' ' '
+          echo ""
+
+          CANDIDATES="$(grep -oE '^\*_(GCC[0-9]*)_' Conf/tools_def.txt | sed 's/^\*_//; s/_$//' | sort -u -V -r | tr '\n' ' ') GCC"
+
+          for TAG in $CANDIDATES; do
+            echo "=== 尝试工具链: $TAG ==="
+            if build -a X64 -b RELEASE -t "$TAG" -p SmbiosChanger-main/SmbiosSpooferV2.dsc; then
+              echo "构建成功，使用工具链: $TAG"
+              exit 0
+            fi
+            echo "--- 工具链 $TAG 构建失败，继续尝试下一个 ---"
+          done
+
+          echo "所有候选工具链均失败"
+          exit 1
 
       - name: Collect build output
         if: always()
