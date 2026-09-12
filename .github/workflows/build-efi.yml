@@ -1,0 +1,67 @@
+# 在 GitHub Actions 上编译 EDK2 UEFI 应用并产出 .efi 工件
+name: Build UEFI Application (EDK2)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Normalize project layout
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          if [ -f SmbiosSpooferV2.dsc ]; then
+            SRC="$GITHUB_WORKSPACE"
+          elif [ -f SmbiosChanger-main/SmbiosSpooferV2.dsc ]; then
+            SRC="$GITHUB_WORKSPACE/SmbiosChanger-main"
+          elif [ -f SmbiosChanger-main/SmbiosChanger-main/SmbiosSpooferV2.dsc ]; then
+            SRC="$GITHUB_WORKSPACE/SmbiosChanger-main/SmbiosChanger-main"
+          else
+            echo "ERROR: SmbiosSpooferV2.dsc not found"
+            find . -maxdepth 3 -name "*.dsc" || true
+            exit 1
+          fi
+          rm -rf "$GITHUB_WORKSPACE/pkg"
+          mkdir -p "$GITHUB_WORKSPACE/pkg/SmbiosChanger-main"
+          cp -r "$SRC"/. "$GITHUB_WORKSPACE/pkg/SmbiosChanger-main/"
+
+      - name: Install Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential uuid-dev acpica-tools nasm python3 python3-distutils
+
+      - name: Clone EDK2 (with submodules)
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          git clone --depth 1 --recursive https://github.com/tianocore/edk2.git edk2
+
+      - name: Build BaseTools
+        run: make -C "$GITHUB_WORKSPACE/edk2/BaseTools"
+
+      - name: Build SmbiosSpooferV2.efi
+        run: |
+          cd "$GITHUB_WORKSPACE/edk2"
+          export WORKSPACE="$PWD"
+          export EDK_TOOLS_PATH="$PWD/BaseTools"
+          export PACKAGES_PATH="$PWD:$GITHUB_WORKSPACE/pkg"
+          . edksetup.sh BaseTools
+          build -a X64 -b RELEASE -t GCC5 -p SmbiosChanger-main/SmbiosSpooferV2.dsc
+
+      - name: Collect build output
+        if: always()
+        run: find "$GITHUB_WORKSPACE/edk2/Build" -name '*.efi' -print 2>/dev/null || true
+
+      - name: Upload EFI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmbiosSpooferV2-efi
+          path: edk2/Build/SmbiosSpooferV2/RELEASE_*/X64/*.efi
+          if-no-files-found: warn
